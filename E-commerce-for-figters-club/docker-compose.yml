@@ -1,0 +1,169 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────
+#  ShopEase — Full Stack Docker Compose
+#
+#  Services:
+#    frontend  → React (port 3000)
+#    backend   → Next.js API (port 8000)
+#    mongodb   → Products, Users, Orders (port 27017)
+#    percona   → Transactions, Payments (port 3306)
+#    redis     → Cart cache, Sessions (port 6379)
+#    rabbitmq  → Message queues (port 5672, mgmt 15672)
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Frontend ────────────────────────────────────────────────
+  frontend:
+    build:
+      context:    ./frontend
+      dockerfile: Dockerfile
+    container_name: shopease-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    depends_on:
+      - backend
+    networks:
+      - shopease-net
+    restart: unless-stopped
+
+  # ── Backend API ─────────────────────────────────────────────
+  backend:
+    build:
+      context:    ./backend
+      dockerfile: Dockerfile
+    container_name: shopease-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/ecommerce?authSource=admin
+      - MYSQL_HOST=percona
+      - MYSQL_PORT=3306
+      - MYSQL_USER=admin
+      - MYSQL_PASSWORD=password
+      - MYSQL_DATABASE=ecommerce_transactions
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redispassword
+      - RABBITMQ_URL=amqp://admin:password@rabbitmq:5672
+      - JWT_SECRET=change_this_in_production_please
+      - FRONTEND_URL=http://localhost:3000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      percona:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - shopease-net
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout:  10s
+      retries:  3
+
+  # ── MongoDB ─────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: shopease-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE:      ecommerce
+    volumes:
+      - mongodb_data:/data/db
+      - ./infra/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    networks:
+      - shopease-net
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+  # ── Percona MySQL ────────────────────────────────────────────
+  percona:
+    image: percona/percona-server:8.0
+    container_name: shopease-percona
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE:      ecommerce_transactions
+      MYSQL_USER:          admin
+      MYSQL_PASSWORD:      password
+    volumes:
+      - percona_data:/var/lib/mysql
+      - ./infra/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - shopease-net
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "admin", "-ppassword"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  # ── Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: shopease-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispassword --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - shopease-net
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "redis-cli", "-a", "redispassword", "ping"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+  # ── RabbitMQ ─────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: shopease-rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - shopease-net
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout:  5s
+      retries:  5
+
+# ─── Networks ────────────────────────────────────────────────
+networks:
+  shopease-net:
+    driver: bridge
+
+# ─── Volumes ─────────────────────────────────────────────────
+volumes:
+  mongodb_data:
+  percona_data:
+  redis_data:
+  rabbitmq_data:
